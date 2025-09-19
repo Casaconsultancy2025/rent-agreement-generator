@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rent Agreement Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Tinos:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- Libraries for PDF Generation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    
+    <!-- React & Babel for in-browser JSX transpilation -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        .agreement-output {
+            font-family: 'Tinos', 'Times New Roman', serif;
+            line-height: 1.6;
+            color: #000;
+        }
+        .agreement-output h1, .agreement-output h2, .agreement-output h3, .agreement-output h4 {
+            font-family: 'Inter', sans-serif;
+            font-weight: bold;
+            color: #000;
+        }
+        .tab-btn.active {
+            border-bottom-color: #4f46e5;
+            color: #4f46e5;
+            font-weight: 600;
+        }
+         @media print {
+            body * {
+                visibility: hidden;
+            }
+            .print-area, .print-area * {
+                visibility: visible;
+            }
+            .print-area {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                height: auto;
+                overflow: visible;
+            }
+            .no-print {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useMemo, useCallback, useEffect } = React;
+
+        // --- Enums ---
+        const AgreementType = {
+            RESIDENTIAL: 'RESIDENTIAL',
+            COMMERCIAL: 'COMMERCIAL'
+        };
+
+        // --- Constants ---
+        const STAMP_DUTY_RATES = {
+            'Delhi': { type: 'formula', formula: (rent, deposit) => (rent * 12 * 5 * 0.02) + (deposit > 0 ? 100 : 0), text: '2% of 5-year average rent + deposit stamp.' },
+            'Maharashtra': { type: 'formula', formula: (rent, deposit) => (rent * 12 * 0.0025) + (deposit * 0.0025), text: '0.25% of total annual rent + deposit.' },
+            'Karnataka': { type: 'formula', formula: (rent, deposit) => Math.min(((rent * 12) + deposit) * 0.01, 500), text: '1% of total annual rent + deposit, capped at Rs 500.'},
+            'Tamil Nadu': { type: 'formula', formula: (rent, deposit) => (rent * 12 * 0.01) + (deposit * 0.01), text: '1% of total annual rent + 1% of deposit amount.' },
+            'Uttar Pradesh': { type: 'formula', formula: (rent, deposit) => (rent * 12 * 5 * 0.04), text: '4% of 5-year average rent.' },
+            'Haryana': { type: 'formula', formula: (rent, deposit) => (rent*12*5 * 0.015), text: '1.5% of 5-year average rent.' },
+        };
+        
+        // --- Helper Functions ---
+        function formatDate(dateString) {
+            if (!dateString) return '____________';
+            const options = { year: 'numeric', month: 'numeric', day: 'numeric' };
+            const date = new Date(dateString);
+            const userTimezoneOffset = date.getTimezoneOffset() * 60000;
+            return new Date(date.getTime() + userTimezoneOffset).toLocaleDateString('en-IN', options);
+        }
+
+        function getMonthName(dateString) {
+             if (!dateString) return '__________';
+             const date = new Date(dateString);
+             const userTimezoneOffset = date.getTimezoneOffset() * 60000;
+             return new Date(date.getTime() + userTimezoneOffset).toLocaleString('en-US', { month: 'long' });
+        }
+        function getDay(dateString) {
+             if (!dateString) return '______';
+             const date = new Date(dateString);
+             const userTimezoneOffset = date.getTimezoneOffset() * 60000;
+             return String(new Date(date.getTime() + userTimezoneOffset).getDate());
+        }
+        function getYear(dateString) {
+             if (!dateString) return '______';
+             const date = new Date(dateString);
+             const userTimezoneOffset = date.getTimezoneOffset() * 60000;
+             return String(new Date(date.getTime() + userTimezoneOffset).getFullYear());
+        }
+
+        const ones = ['', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+        const tens = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+        const teens = ['ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
+
+        function convert_millions(num) {
+            if (num >= 1000000) {
+                return convert_millions(Math.floor(num / 1000000)) + " million " + convert_thousands(num % 1000000);
+            } else {
+                return convert_thousands(num);
+            }
+        }
+
+        function convert_thousands(num) {
+            if (num >= 1000) {
+                return convert_hundreds(Math.floor(num / 1000)) + " thousand " + convert_hundreds(num % 1000);
+            } else {
+                return convert_hundreds(num);
+            }
+        }
+
+        function convert_hundreds(num) {
+            if (num > 99) {
+                return ones[Math.floor(num / 100)] + " hundred " + convert_tens(num % 100);
+            } else {
+                return convert_tens(num);
+            }
+        }
+
+        function convert_tens(num) {
+            if (num < 10) return ones[num];
+            else if (num >= 10 && num < 20) return teens[num - 10];
+            else {
+                return tens[Math.floor(num / 10)] + " " + ones[num % 10];
+            }
+        }
+
+        function numberToWords(num) {
+            if (num == 0) return "Zero";
+            if (!num) return "";
+            try {
+                const words = convert_millions(Math.floor(num));
+                return words.replace(/\s+/g, ' ').trim().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+            } catch(e) {
+                return "";
+            }
+        }
+
+        const downloadPDF = async (contentId, outputFilename, setGenerating) => {
+            const { jsPDF } = window.jspdf;
+            const content = document.getElementById(contentId);
+            if (!content) return;
+
+            setGenerating(true);
+
+            // Temporarily adjust styles for full content capture
+            const originalHeight = content.style.height;
+            const originalOverflow = content.style.overflowY;
+            content.style.height = 'auto';
+            content.style.overflowY = 'visible';
+
+            try {
+                // 1. Render HTML to Canvas
+                const canvas = await html2canvas(content, { scale: 2, useCORS: true });
+                
+                // Restore original styles
+                content.style.height = originalHeight;
+                content.style.overflowY = originalOverflow;
+
+                // 2. Create PDF from Canvas image
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jsPDF('p', 'mm', 'a4');
+                const imgProps = pdf.getImageProperties(imgData);
+                const pdfWidth = pdf.internal.pageSize.getWidth();
+                const pageHeight = pdf.internal.pageSize.getHeight();
+                
+                // Calculate the height of the image in the PDF's aspect ratio
+                const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+                let heightLeft = pdfHeight;
+                let position = 0;
+
+                // Add the first page
+                pdf.addImage(imgData, 'PNG', 10, 10, pdfWidth - 20, pdfHeight - 20);
+                heightLeft -= pageHeight;
+
+                // Add subsequent pages if content is taller than one page
+                while (heightLeft > 0) {
+                    position = heightLeft - pdfHeight;
+                    pdf.addPage();
+                    pdf.addImage(imgData, 'PNG', 10, position - 10, pdfWidth - 20, pdfHeight - 20);
+                    heightLeft -= pageHeight;
+                }
+                
+                // 3. Generate a Blob and trigger a download via an anchor tag.
+                // This is the standard method for downloads and is more likely to work
+                // in sandboxed environments like Wix that block new tabs for blobs.
+                const pdfBlob = pdf.output('blob');
+                const url = URL.createObjectURL(pdfBlob);
+
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = outputFilename; // Sets the filename for download
+
+                // Append link to body, click it, and then remove it
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+
+                // Release the object URL
+                URL.revokeObjectURL(url);
+                
+            } catch (error) {
+                console.error("Error generating PDF:", error);
+                alert("Sorry, an error occurred while generating the PDF. Please try again.");
+            } finally {
+                setGenerating(false);
+            }
+        };
+
+        // --- Shared Components ---
+        const ActionButtons = ({ agreementContent, onReset, downloadFn, title }) => {
+            const [copyMessage, setCopyMessage] = useState('');
+            const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+
+            const handleCopy = useCallback(() => {
+                const tempDiv = document.createElement('div');
+                tempDiv.innerHTML = agreementContent;
+                navigator.clipboard.writeText(tempDiv.textContent || '').then(() => {
+                    setCopyMessage('Agreement content copied to clipboard!');
+                    setTimeout(() => setCopyMessage(''), 2000);
+                });
+            }, [agreementContent]);
+
+            const handlePrint = () => {
+                window.print();
+            };
+
+            return (
+                <React.Fragment>
+                    <div className="flex flex-wrap justify-between items-center mb-4 no-print">
+                        <h2 className="text-2xl font-semibold text-gray-700">{title}</h2>
+                        <div className="flex space-x-2 mt-2 md:mt-0 flex-wrap">
+                            <button
+                                onClick={() => downloadFn(setIsGeneratingPdf)}
+                                disabled={isGeneratingPdf}
+                                className="px-4 py-2 bg-purple-600 text-white rounded-md shadow-sm hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-purple-500 disabled:bg-purple-400"
+                            >
+                                {isGeneratingPdf ? 'Generating...' : 'Download PDF'}
+                            </button>
+                            <button onClick={handleCopy} className="px-4 py-2 bg-blue-600 text-white rounded-md shadow-sm hover:bg-blue-700">Copy</button>
+                            <button onClick={handlePrint} className="px-4 py-2 bg-green-600 text-white rounded-md shadow-sm hover:bg-green-700">Print</button>
+                            <button onClick={onReset} className="px-4 py-2 bg-red-600 text-white rounded-md shadow-sm hover:bg-red-700">Reset</button>
+                        </div>
+                    </div>
+                    {copyMessage && <div className="text-green-600 font-medium text-center mb-2 no-print">{copyMessage}</div>}
+                </React.Fragment>
+            );
+        };
+
+        const PartyInput = ({ title, parties, setParties, isCommercial = false }) => {
+            const handlePartyChange = (index, field, value) => {
+                const newParties = [...parties];
+                newParties[index] = { ...newParties[index], [field]: value };
+                setParties(newParties);
+            };
+
+            const addParty = () => {
+                setParties([...parties, { id: `p${Date.now()}`, name: '', idProof: '', address: '', authSignatory: '' }]);
+            };
+
+            const removeParty = (id) => {
+                if (parties.length > 1) {
+                    setParties(parties.filter(p => p.id !== id));
+                }
+            };
+
+            return (
+                <div>
+                    <h4 className="font-semibold text-gray-600">{title}</h4>
+                    <div className="mt-2 space-y-4">
+                        {parties.map((party, index) => (
+                            <div key={party.id} className="grid grid-cols-1 gap-4 border p-4 rounded-md relative">
+                                {parties.length > 1 && (
+                                    <button
+                                        type="button"
+                                        onClick={() => removeParty(party.id)}
+                                        className="remove-btn absolute top-2 right-2 bg-red-100 text-red-600 rounded-full w-6 h-6 flex items-center justify-center font-bold border border-red-200 hover:bg-red-600 hover:text-white transition-colors"
+                                    >
+                                        X
+                                    </button>
+                                )}
+                                <input
+                                    type="text"
+                                    value={party.name}
+                                    onChange={(e) => handlePartyChange(index, 'name', e.target.value)}
+                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                    placeholder={isCommercial ? "Name / Company Name" : "Full Name"}
+                                />
+                                {isCommercial && (
+                                     <input
+                                        type="text"
+                                        value={party.authSignatory}
+                                        onChange={(e) => handlePartyChange(index, 'authSignatory', e.target.value)}
+                                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                        placeholder="Authorised Signatory Name"
+                                    />
+                                )}
+                                <input
+                                    type="text"
+                                    value={party.idProof}
+                                    onChange={(e) => handlePartyChange(index, 'idProof', e.target.value)}
+                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                    placeholder={isCommercial ? "Aadhar No. / Company Reg. No." : "ID Proof (e.g. Aadhar, PAN)"}
+                                />
+                                <textarea
+                                    value={party.address}
+                                    onChange={(e) => handlePartyChange(index, 'address', e.target.value)}
+                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                    rows={2}
+                                    placeholder="Mailing Address"
+                                ></textarea>
+                            </div>
+                        ))}
+                    </div>
+                    <button type="button" onClick={addParty} className="mt-2 text-indigo-600 hover:text-indigo-800 font-semibold text-sm">
+                        + Add Another
+                    </button>
+                </div>
+            );
+        };
+
+        const StampDutyCalculator = ({ selectedState, setSelectedState, rent, deposit }) => {
+            const sortedStates = useMemo(() => Object.keys(STAMP_DUTY_RATES).sort(), []);
+
+            const stampDutyResult = useMemo(() => {
+                if (!selectedState || rent === 0) return null;
+
+                const rateInfo = STAMP_DUTY_RATES[selectedState];
+                if (!rateInfo) return null;
+
+                let dutyText = '';
+                if (rateInfo.formula) {
+                    const duty = rateInfo.formula(rent, deposit);
+                    dutyText = `₹ ${duty.toFixed(2)}`;
+                }
+
+                return (
+                    <div className="mt-4 p-4 bg-gray-100 rounded-md text-center">
+                        <h3 className="text-lg font-semibold">
+                            Estimated Stamp Duty: <span className="text-indigo-600">{dutyText}</span>
+                        </h3>
+                        <p className="text-xs mt-1">{rateInfo.text}</p>
+                    </div>
+                );
+
+            }, [selectedState, rent, deposit]);
+            
+            return (
+                <div>
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4">Stamp Duty Calculator</h3>
+                    <p className="text-xs text-gray-500 mb-4">Note: Rates vary by state. This is for estimation purposes only.</p>
+                    <div className="grid grid-cols-1 gap-4 items-end">
+                        <div>
+                            <label htmlFor="stateSelector" className="block text-sm font-medium text-gray-700">Select State</label>
+                            <select
+                                id="stateSelector"
+                                value={selectedState}
+                                onChange={(e) => setSelectedState(e.target.value)}
+                                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                            >
+                                <option value="">-- Select State --</option>
+                                {sortedStates.map(state => (
+                                    <option key={state} value={state}>{state}</option>
+                                ))}
+                            </select>
+                        </div>
+                    </div>
+                    {stampDutyResult}
+                </div>
+            );
+        };
+
+        const WitnessInput = ({ witnesses, setWitnesses, isCommercial = false }) => {
+            const handleWitnessChange = (index, field, value) => {
+                const newWitnesses = [...witnesses];
+                newWitnesses[index] = { ...newWitnesses[index], [field]: value };
+                setWitnesses(newWitnesses);
+            };
+
+            const addWitness = () => {
+                setWitnesses([...witnesses, { id: `w${Date.now()}`, name: '', address: '' }]);
+            };
+
+            const removeWitness = (id) => {
+                if (witnesses.length > 1) {
+                    setWitnesses(witnesses.filter(w => w.id !== id));
+                }
+            };
+
+            return (
+                <div>
+                    <h3 className="text-xl font-semibold text-gray-800 mb-4">Witnesses</h3>
+                    <div className="mt-2 space-y-4">
+                        {witnesses.map((witness, index) => (
+                            <div key={witness.id} className="grid grid-cols-1 gap-4 border p-4 rounded-md relative">
+                                {witnesses.length > 1 && (
+                                     <button
+                                        type="button"
+                                        onClick={() => removeWitness(witness.id)}
+                                        className="remove-btn absolute top-2 right-2 bg-red-100 text-red-600 rounded-full w-6 h-6 flex items-center justify-center font-bold border border-red-200 hover:bg-red-600 hover:text-white transition-colors"
+                                    >
+                                        X
+                                    </button>
+                                )}
+                                <input
+                                    type="text"
+                                    value={witness.name}
+                                    onChange={(e) => handleWitnessChange(index, 'name', e.target.value)}
+                                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                    placeholder="Witness Full Name"
+                                />
+                                 {isCommercial && (
+                                    <textarea
+                                        value={witness.address}
+                                        onChange={(e) => handleWitnessChange(index, 'address', e.target.value)}
+                                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm"
+                                        rows={2}
+                                        placeholder="Witness Address"
+                                    ></textarea>
+                                 )}
+                            </div>
+                        ))}
+                    </div>
+                    <button type="button" onClick={addWitness} className="mt-2 text-indigo-600 hover:text-indigo-800 font-semibold text-sm">
+                        + Add Another Witness
+                    </button>
+                </div>
+            );
+        };
+
+        // --- Main Components ---
+        const ResidentialAgreement = () => {
+            const [agreementDate, setAgreementDate] = useState(new Date().toISOString().split('T')[0]);
+            const [landlords, setLandlords] = useState([{ id: 'l1', name: '', idProof: '', address: '' }]);
+            const [tenants, setTenants] = useState([{ id: 't1', name: '', idProof: '', address: '' }]);
+            const [witnesses, setWitnesses] = useState([{ id: 'w1', name: '' }, { id: 'w2', name: '' }]);
+            const [propertyAddress, setPropertyAddress] = useState('');
+            const [propertyFloor, setPropertyFloor] = useState('');
+            const [propertyDescription, setPropertyDescription] = useState('');
+            const [rentAmount, setRentAmount] = useState('');
+            const [securityDeposit, setSecurityDeposit] = useState('');
+            const [leasePeriod, setLeasePeriod] = useState('');
+            const [modeOfPayment, setModeOfPayment] = useState('Online Payment');
+            const [startDate, setStartDate] = useState('');
+            const [endDate, setEndDate] = useState('');
+            const [lockInPeriod, setLockInPeriod] = useState('');
+            const [noticePeriod, setNoticePeriod] = useState('2');
+            const [jurisdiction, setJurisdiction] = useState('New Delhi');
+            const [selectedState, setSelectedState] = useState('');
+            const [additionalDetails, setAdditionalDetails] = useState('');
+
+            const initialFormState = useCallback(() => {
+                setAgreementDate(new Date().toISOString().split('T')[0]);
+                setLandlords([{ id: 'l1', name: '', idProof: '', address: '' }]);
+                setTenants([{ id: 't1', name: '', idProof: '', address: '' }]);
+                setWitnesses([{ id: 'w1', name: '' }, { id: 'w2', name: '' }]);
+                setPropertyAddress('');
+                setPropertyFloor('');
+                setPropertyDescription('');
+                setRentAmount('');
+                setSecurityDeposit('');
+                setLeasePeriod('');
+                setModeOfPayment('Online Payment');
+                setStartDate('');
+                setEndDate('');
+                setLockInPeriod('');
+                setNoticePeriod('2');
+                setJurisdiction('New Delhi');
+                setSelectedState('');
+                setAdditionalDetails('');
+            }, []);
+
+            useEffect(() => {
+                initialFormState();
+            }, [initialFormState]);
+
+            const agreementContent = useMemo(() => {
+                const numLeasePeriod = parseInt(leasePeriod) || 0;
+                const numRentAmount = parseFloat(rentAmount) || 0;
+                const numSecurityDeposit = parseFloat(securityDeposit) || 0;
+
+                let stampDutyText = 'Not calculated';
+                if (selectedState && STAMP_DUTY_RATES[selectedState]?.formula) {
+                    const duty = STAMP_DUTY_RATES[selectedState].formula(numRentAmount, numSecurityDeposit);
+                    stampDutyText = `₹${duty.toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+                } else if (selectedState) {
+                    stampDutyText = STAMP_DUTY_RATES[selectedState].text;
+                }
+
+                const landlordHtml = `
+                    <table class="w-full border-collapse">
+                        <tbody>
+                        ${landlords.map((l, i) => `
+                            <tr>
+                                <td class="w-8 align-top py-1">[${i+1}]</td>
+                                <td class="py-1">
+                                    <strong>${l.name.toUpperCase() || '[LANDLORD NAME]'}</strong>, resident of ${l.address || '[Landlord Address]'} (ID Proof: ${l.idProof || 'N/A'});
+                                    ${i < landlords.length - 1 ? 'and' : ''}
+                                </td>
+                            </tr>
+                        `).join('')}
+                        </tbody>
+                    </table>
+                    <p class="mt-2">(hereinafter jointly called the “<strong>LESSORS</strong>” which expression shall unless opposed or repugnant to the context hereof include them, their heirs, executors, administrators and legal representatives of the <strong>ONE PART</strong>)</p>
+                `;
+
+                const tenantHtml = `
+                    <div>
+                        ${tenants.map((t, i) => `
+                            <p class="py-1">
+                                <strong>${t.name.toUpperCase() || '[TENANT NAME]'}</strong>, resident of ${t.address || '[Tenant Address]'} (ID Proof: ${t.idProof || 'N/A'});
+                                ${i < tenants.length - 1 ? 'and' : ''}
+                            </p>
+                        `).join('')}
+                    </div>
+                    <p class="mt-2">(hereinafter called the “<strong>LESSEE</strong>” which expression shall, unless opposed or repugnant to the context hereof, include his heirs, executors, administrators and legal representatives of the <strong>OTHER PART</strong>).</p>
+                `;
+
+                const landlordSignatures = landlords.map(l => `<div class="mt-8 text-center"><div class="w-2/3 mx-auto h-12"></div><p><strong>${l.name || '[Landlord Name]'}</strong></p></div>`).join('');
+                const tenantSignatures = tenants.map(t => `<div class="mt-8 text-center"><div class="w-2/3 mx-auto h-12"></div><p><strong>${t.name || '[Tenant Name]'}</strong></p></div>`).join('');
+                const witnessSignatures = witnesses.map((w, i) => `
+                    <div class="mt-8 text-center w-1/2 px-4">
+                         <div class="w-2/3 mx-auto h-12"></div>
+                         <p><strong>Witness ${i+1}: ${w.name || '____________________'}</strong></p>
+                    </div>
+                `).join('');
+
+                return `
+                <div id="residentialAgreementContent" class="p-4 sm:p-6 text-justify">
+                    <h2 class="text-2xl font-bold text-center underline mb-6">LEASE DEED</h2>
+                    <table class="w-full mb-4 text-left border">
+                        <tbody>
+                            <tr><td class="w-1/3 p-2 font-semibold border">Property</td><td class="w-8 border p-2">:</td><td class="border p-2">${propertyAddress || '[Property Address]'}</td></tr>
+                            <tr><td class="p-2 font-semibold border">Floor</td><td class="border p-2">:</td><td class="border p-2">${propertyFloor || '[Floor]'}</td></tr>
+                            <tr><td class="p-2 font-semibold border">Lease Period</td><td class="border p-2">:</td><td class="border p-2">${numLeasePeriod > 0 ? `${numLeasePeriod} Years` : '___'}</td></tr>
+                            <tr><td class="p-2 font-semibold border">Monthly Rent</td><td class="border p-2">:</td><td class="border p-2">Rs. ${numRentAmount > 0 ? numRentAmount.toLocaleString('en-IN') : '___'}/-</td></tr>
+                            <tr><td class="p-2 font-semibold border">Stamp Duty Paid</td><td class="border p-2">:</td><td class="border p-2">${stampDutyText}</td></tr>
+                        </tbody>
+                    </table>
+                    <p>This LEASE DEED is made at ${jurisdiction || '[Jurisdiction]'}, on this <strong>${getDay(agreementDate)}</strong> day of <strong>${getMonthName(agreementDate)}</strong>, <strong>${getYear(agreementDate)}</strong> between;</p>
+                    <div class="my-4">${landlordHtml}</div>
+                    <p class="text-center font-bold">AND</p>
+                    <div class="my-4">${tenantHtml}</div>
+                    <h3 class="font-bold mt-6">A. WHEREAS</h3>
+                    <p>the LESSORS are the lawful owners and in possession of the ${propertyFloor || '[Floor]'} of the Property Bearing No. ${propertyAddress || '[Property Address]'}, consisting of ${propertyDescription || '[Property Description]'} (hereinafter called the "<strong>DEMISED PREMISES</strong>").</p>
+                    <h3 class="font-bold mt-4">B. AND WHEREAS</h3>
+                    <p>the LESSEE named above having satisfied himself with regard to both to the measurement of the Demised Premises and the condition thereof and having accepted the same, is desirous of taking the Leased Premises on lease.</p>
+                    <h3 class="font-bold mt-4">C. AND WHEREAS</h3>
+                    <p>the LESSORS have agreed with the LESSEE to grant to the LESSEE under the terms of this LEASE the Demised Premises, for a period of ${numLeasePeriod > 0 ? numLeasePeriod : '___'} (${numberToWords(numLeasePeriod) || '___'}) years w.e.f. ${formatDate(startDate)} to ${formatDate(endDate)} and the LESSEE has agreed to take on LEASE the same, subject to the covenants, conditions and stipulations, hereinafter in these presents expressed and contained.</p>
+                    <h3 class="font-bold mt-6 text-center underline">NOW THIS LEASE AGREEMENT WITNESSES AS UNDER:</h3>
+                    <ol class="list-decimal list-outside space-y-4 mt-4 ml-6">
+                        <li>That the LESSORS hereby demise unto the LESSEE all that the Demised Premises, for a total period of ${numLeasePeriod > 0 ? numLeasePeriod : '___'} (${numberToWords(numLeasePeriod) || '___'}) years commencing from ${formatDate(startDate)} and ending on ${formatDate(endDate)}. The LESSEE paying unto the LESSORS during the said period a monthly rent of <strong>Rs. ${numRentAmount > 0 ? numRentAmount.toLocaleString('en-IN') : '___'}/- (${numberToWords(numRentAmount) || '___'} Only)</strong>, payable via <strong>${modeOfPayment}</strong> every month in advance by the 5th day of each English calendar month.</li>
+                        <li>The rent shall be excluding of charges for consumption of electricity, water payments, LPG charges, water sewage and the proportionate charges of the maintenance of common areas of the building, which shall be paid by the LESSEE directly to the authorities concerned (as per actual/bills where available) and give the receipt of the payments to the LESSORS.</li>
+                        <li>That it is hereby specifically agreed and accepted between the LESSORS and the LESSEE, that the first ${lockInPeriod || '___'} months of lease commencing from ${formatDate(startDate)} shall be the lock-in-period for both the parties hereto and neither the LESSORS nor the LESSEE shall have any right to terminate this Agreement during the lock-in-period.</li>
+                        <li>The LESSEE shall use the Demised Premises for residential purposes only and shall not use the Demised Premises for commercial use, any illegal or immoral purpose or use it so as to cause any nuisance or annoyance to the other owners/occupants of the building or neighboring properties. The LESSEE shall keep the LESSORS indemnified in this regard.</li>
+                        <li>Not to assign, sublet, underlet, transfer or grant lease to use or part with the possession of the demised premises or any part thereof without the previous written consent of the LESSORS.</li>
+                        <li>To permit the LESSORS and their duly authorized agents upon prior intimation, to enter upon the Demised Premises and to view the state or condition thereof.</li>
+                        <li>To keep the interior of the Demised Premises in a good state and condition, reasonable wear and tear accepted. Any damage or breakage caused by the LESSEE shall be made good by the LESSEE.</li>
+                        <li>That no structural alterations shall be made by the LESSEE in the Demised Premises or any part thereof, without the prior written permission of the LESSORS. That all day to day repairs and maintenance shall be done by the LESSEE at his own cost.</li>
+                    </ol>
+                    <h3 class="font-bold mt-6">THE LESSORS HEREBY COVENANT WITH THE LESSEE AS FOLLOWS:</h3>
+                    <ol class="list-decimal list-outside space-y-4 mt-4 ml-6" start="9">
+                        <li>The LESSORS have full right and absolute authority to grant the LEASE of the Demised Premises as absolute owner thereof.</li>
+                        <li>That the LESSEE paying the rent hereby reserve and observing and performing the several covenants and stipulations hereinbefore, peacefully hold and enjoy the Demised Premises during the said term.</li>
+                    </ol>
+                    <h3 class="font-bold mt-6">PROVIDED AND IT IS HEREBY AGREED BY AND BETWEEN THE LESSORS AND THE LESSEE AS FOLLOWS:</h3>
+                     <ol class="list-decimal list-outside space-y-4 mt-4 ml-6" start="11">
+                        <li>That the LESSEE has paid to the LESSORS a sum of <strong>Rs. ${numSecurityDeposit > 0 ? numSecurityDeposit.toLocaleString('en-IN') : '___'}/- (${numberToWords(numSecurityDeposit) || '___'} Only)</strong> as a Security Deposit. The security amount shall be retained by the LESSORS as interest free deposit and will be refundable at the time of termination of the said LEASE against handing over the vacant physical and peaceful possession of the Demised Premises to the LESSORS, after making all adjustments towards arrears of rent, utility dues, or any other charges.</li>
+                        <li>The Lease may be terminated, either by the LESSORS or the LESSEE by giving ${noticePeriod || '___'} (${numberToWords(parseInt(noticePeriod) || 0) || '___'}) months prior notice in writing to the other, but only after the expiry of Lock-in-Period of ${lockInPeriod || '___'} months.</li>
+                        <li>That all the expenses of this Lease Deed, viz. Stamp Duty, Registration charges, lawyer's fee etc. shall be borne and paid by the LESSEE and the LESSORS, equally i.e. 50:50.</li>
+                        <li>That the Courts in ${jurisdiction || '[Jurisdiction]'} alone shall have the jurisdiction in respect of all matters or disputes or differences arising under or in connection with or in relation to this Agreement.</li>
+                        ${additionalDetails ? `<li><strong>ADDITIONAL CLAUSES:</strong><br><div style="white-space: pre-wrap;">${additionalDetails}</div></li>` : ''}
+                     </ol>
+                    <p class="text-center mt-8 font-bold">IN WITNESS WHEREOF, the parties hereto have caused their respective common seals to be thereunto affixed the day and year here in above written.</p>
+                    <div class="mt-12">
+                        <div class="flex justify-around flex-wrap text-center">
+                            <div><h4 class="font-bold">LESSORS</h4>${landlordSignatures}</div>
+                            <div><h4 class="font-bold">LESSEE</h4>${tenantSignatures}</div>
+                        </div>
+                        <div class="mt-12 text-center">
+                            <h3 class="font-bold">WITNESSES:-</h3>
+                            <div class="flex justify-around items-start flex-wrap">${witnessSignatures}</div>
+                        </div>
+                    </div>
+                </div>
+                `;
+
+            }, [landlords, tenants, witnesses, agreementDate, propertyAddress, propertyFloor, propertyDescription, rentAmount, securityDeposit, leasePeriod, modeOfPayment, startDate, endDate, lockInPeriod, noticePeriod, jurisdiction, selectedState, additionalDetails]);
+
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    {/* Form Section */}
+                    <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg no-print">
+                        <form>
+                            <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">1. Parties & Date</h3>
+                                <input type="date" value={agreementDate} onChange={e => setAgreementDate(e.target.value)} title="Agreement Date" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm mb-4" />
+                                <div className="space-y-4">
+                                    <PartyInput title="Landlord(s) / Lessor(s)" parties={landlords} setParties={setLandlords} />
+                                    <PartyInput title="Tenant(s) / Lessee(s)" parties={tenants} setParties={setTenants} />
+                                </div>
+                            </div>
+                            <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">2. Property Details</h3>
+                                <div className="space-y-4">
+                                    <input type="text" value={propertyAddress} onChange={e => setPropertyAddress(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Property Full Address" />
+                                    <input type="text" value={propertyFloor} onChange={e => setPropertyFloor(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Floor (e.g. Entire Third Floor)" />
+                                    <textarea value={propertyDescription} onChange={e => setPropertyDescription(e.target.value)} rows={3} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Detailed Description (e.g. 3 Bedrooms, 3 Bathrooms...)"></textarea>
+                                </div>
+                            </div>
+                            <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">3. Financial Terms</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <input type="number" value={rentAmount} onChange={e => setRentAmount(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Initial Monthly Rent (₹)" />
+                                    <input type="number" value={securityDeposit} onChange={e => setSecurityDeposit(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Security Deposit (₹)" />
+                                    <div className="col-span-full">
+                                        <label htmlFor="modeOfPayment" className="block text-sm font-medium text-gray-700">Mode of Payment</label>
+                                        <select id="modeOfPayment" value={modeOfPayment} onChange={e => setModeOfPayment(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm">
+                                            <option>Online Payment</option>
+                                            <option>Cheque</option>
+                                            <option>Cash</option>
+                                        </select>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">4. Agreement Period</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <input type="number" value={leasePeriod} onChange={e => setLeasePeriod(e.target.value)} min="0" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Lease Period (Years)" />
+                                    <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} title="Lease Start Date" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" />
+                                    <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} title="Lease End Date" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" />
+                                    <input type="number" value={lockInPeriod} onChange={e => setLockInPeriod(e.target.value)} min="0" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Lock-in Period (Months)" />
+                                    <input type="number" value={noticePeriod} onChange={e => setNoticePeriod(e.target.value)} min="0" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Notice Period (Months)" />
+                                </div>
+                            </div>
+                             <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">5. Legal & Additional Details</h3>
+                                 <input type="text" value={jurisdiction} onChange={e => setJurisdiction(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Jurisdiction (e.g. New Delhi)" />
+                                <textarea value={additionalDetails} onChange={e => setAdditionalDetails(e.target.value)} rows={4} className="mt-4 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Enter any custom clauses or additional details here..."></textarea>
+                            </div>
+                            <div className="mb-8 border-b pb-6">
+                                <WitnessInput witnesses={witnesses} setWitnesses={setWitnesses} />
+                            </div>
+                             <div>
+                                <StampDutyCalculator selectedState={selectedState} setSelectedState={setSelectedState} rent={parseFloat(rentAmount) || 0} deposit={parseFloat(securityDeposit) || 0} />
+                            </div>
+                        </form>
+                    </div>
+                    {/* Output Section */}
+                    <div className="lg:sticky top-8 self-start">
+                         <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg print-area">
+                            <ActionButtons agreementContent={agreementContent} onReset={initialFormState} downloadFn={(setGenerating) => downloadPDF('agreementOutput', 'Residential_Lease_Agreement.pdf', setGenerating)} title="Generated Agreement" />
+                            <div id="agreementOutput" className="agreement-output bg-white p-2 border rounded-md h-[75vh] overflow-y-auto text-sm" dangerouslySetInnerHTML={{ __html: agreementContent }}></div>
+                            <p className="text-xs text-gray-500 mt-4 no-print">
+                               <strong>Disclaimer:</strong> This is a template. Consult a legal professional for advice.
+                           </p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+        const CommercialAgreement = () => {
+            const [agreementDate, setAgreementDate] = useState(new Date().toISOString().split('T')[0]);
+            const [agreementTehsil, setAgreementTehsil] = useState('');
+            const [agreementDistrict, setAgreementDistrict] = useState('');
+            const [lessors, setLessors] = useState([{ id: 'l1', name: '', idProof: '', address: '' }]);
+            const [lessees, setLessees] = useState([{ id: 't1', name: '', idProof: '', address: '', authSignatory: '' }]);
+            const [witnesses, setWitnesses] = useState([{ id: 'w1', name: '', address: '' }]);
+            const [propertyAddress, setPropertyAddress] = useState('');
+            const [leaseDurationYears, setLeaseDurationYears] = useState('');
+            const [startDate, setStartDate] = useState('');
+            const [endDate, setEndDate] = useState('');
+            const [monthlyRent, setMonthlyRent] = useState('');
+            const [securityDeposit, setSecurityDeposit] = useState('');
+            const [isGstApplicable, setIsGstApplicable] = useState(false);
+            const [lockInPeriod, setLockInPeriod] = useState('');
+            const [noticePeriod, setNoticePeriod] = useState('1');
+            const [lessorObligations, setLessorObligations] = useState('');
+            const [lesseeObligations, setLesseeObligations] = useState('');
+            const [jurisdiction, setJurisdiction] = useState('');
+            const [selectedState, setSelectedState] = useState('');
+
+            const initialFormState = useCallback(() => {
+                setAgreementDate(new Date().toISOString().split('T')[0]);
+                setAgreementTehsil('');
+                setAgreementDistrict('');
+                setLessors([{ id: 'l1', name: '', idProof: '', address: '' }]);
+                setLessees([{ id: 't1', name: '', idProof: '', address: '', authSignatory: '' }]);
+                setWitnesses([{ id: 'w1', name: '', address: '' }]);
+                setPropertyAddress('');
+                setLeaseDurationYears('');
+                setStartDate('');
+                setEndDate('');
+                setMonthlyRent('');
+                setSecurityDeposit('');
+                setIsGstApplicable(false);
+                setLockInPeriod('');
+                setNoticePeriod('1');
+                setLessorObligations('');
+                setLesseeObligations('');
+                setJurisdiction('');
+                setSelectedState('');
+            }, []);
+
+             useEffect(() => {
+                initialFormState();
+            }, [initialFormState]);
+
+            const agreementContent = useMemo(() => {
+                const landlordHtmlList = lessors.map(l => `${l.name || '[Lessor Name]'} (Aadhar No. ${l.idProof || 'N/A'}) R/o ${l.address || '[Lessor Address]'}`).join(', ');
+                const tenantHtmlList = lessees.map(t => `M/S ${t.name || '[Lessee Name]'}, Address- ${t.address || '[Lessee Address]'} through its Authorized Signatory ${t.authSignatory || '[Signatory]'} (Aadhar No. ${t.idProof || 'N/A'})`).join(', ');
+
+                const landlordSignatures = lessors.map(l => `<div class="mt-8 text-center"><div class="w-2/3 mx-auto h-12 border-b border-black"></div><p><strong>Lessor: ${l.name || '[Lessor Name]'}</strong></p></div>`).join('');
+                const lesseeSignatures = lessees.map(t => `<div class="mt-8 text-center"><div class="w-2/3 mx-auto h-12 border-b border-black"></div><p><strong>Lessee: ${t.name || '[Lessee Name]'}</strong></p></div>`).join('');
+                const witnessSignatures = witnesses.map(w => `<div class="mt-8 text-center"><div class="w-2/3 mx-auto h-12 border-b border-black"></div><p><strong>Witness: ${w.name || '[Witness Name]'}</strong></p></div>`).join('');
+
+                const numMonthlyRent = parseFloat(monthlyRent) || 0;
+                const numSecurityDeposit = parseFloat(securityDeposit) || 0;
+                const numLeaseDurationYears = parseInt(leaseDurationYears) || 0;
+                
+                let stampDutyText = 'Not calculated';
+                if (selectedState && STAMP_DUTY_RATES[selectedState]?.formula) {
+                    const duty = STAMP_DUTY_RATES[selectedState].formula(numMonthlyRent, numSecurityDeposit);
+                    stampDutyText = `₹${duty.toFixed(2)}`;
+                } else if (selectedState) {
+                    stampDutyText = STAMP_DUTY_RATES[selectedState].text;
+                }
+
+                const averageRent = numMonthlyRent * 12 * numLeaseDurationYears;
+
+                return `
+                <div id="commercialAgreementOutput" class="p-4 sm:p-6">
+                    <h2 class="text-2xl font-bold text-center underline">LEASE DEED</h2>
+                     <table class="w-full my-4 border-collapse border">
+                        <tbody>
+                            <tr><td class="border p-2 font-bold">Lease Period</td><td class="border p-2">${leaseDurationYears || '0'} Years</td></tr>
+                            <tr><td class="border p-2 font-bold">Lease Rent</td><td class="border p-2">₹${numMonthlyRent.toFixed(2)}/- Per Month</td></tr>
+                            <tr><td class="border p-2 font-bold">Average Rent</td><td class="border p-2">₹${averageRent.toFixed(2)}/-</td></tr>
+                            <tr><td class="border p-2 font-bold">Stamp Duty</td><td class="border p-2">${stampDutyText}</td></tr>
+                        </tbody>
+                    </table>
+                    <p>This Lease Deed is made at Tehsil <strong>${agreementTehsil || '[Tehsil]'}</strong> Distt <strong>${agreementDistrict || '[District]'}</strong> on this <strong>${getDay(agreementDate)}</strong> day of <strong>${getMonthName(agreementDate)}</strong>, <strong>${getYear(agreementDate)}</strong> BETWEEN ${landlordHtmlList} hereinafter referred to as the ‘Lessor’ of the one part.</p>
+                    <p class="text-center font-bold my-2">AND</p>
+                    <p>${tenantHtmlList} hereinafter referred to as the ‘Lessee’ of the other part.</p>
+                    <h3 class="font-bold mt-4">WHEREAS</h3>
+                    <p>The Lessor is the absolute and lawful exclusive owner of ${propertyAddress || '[Property Address]'} (hereinafter called the ‘Demised Premises’).</p>
+                     <p class="mt-4">In this Lease Deed, the Lessor has agreed to lease to the Lessee the entire premises with the exception of the basement, which the Lessee has agreed to take for a period of <strong>${leaseDurationYears || '0'}</strong> years beginning from <strong>${formatDate(startDate)}</strong> upon the terms and conditions set out herein:</p>
+                     <ol class="list-decimal list-inside space-y-2 mt-4">
+                        <li>The Lessee shall be bound to pay rent of <strong>₹${numMonthlyRent.toFixed(2)}/-</strong> per month to the Lessor for the Demised Premises. The Lessee shall be bound to pay the rent ${isGstApplicable ? 'and GST payable' : ''} each month on or before the 10th day of each English Calendar month.</li>
+                        <li>The Lessee has paid to the Lessor interest free security deposit of <strong>₹${numSecurityDeposit.toFixed(2)}/-</strong>, equivalent to ${ (numMonthlyRent > 0 ? (numSecurityDeposit/numMonthlyRent).toFixed(1) : 0) } months of rent.</li>
+                         <li>The lease is for an aggregate period of <strong>${leaseDurationYears || '0'}</strong> years starting on <strong>${formatDate(startDate)}</strong> and ending on <strong>${formatDate(endDate)}</strong>.</li>
+                         <li>It is mutually agreed that neither the Lessor nor the Lessee are entitled to terminate this Lease Deed for a period of <strong>${lockInPeriod || '0'}</strong> years (Lock-in Period). However, Lessee may terminate this Lease Deed after the lock in period by giving <strong>${noticePeriod || '1'}</strong> month’s notice in writing.</li>
+                        <li><strong>Lessor's Obligations are as under -</strong><br>${lessorObligations.replace(/\n/g, '<br>') || 'None specified.'}</li>
+                        <li><strong>Lessee’s Obligation are as under –</strong><br>${lesseeObligations.replace(/\n/g, '<br>') || 'None specified.'}</li>
+                         <li>The cost of registration and stamp papers for the execution of this lease deed shall be borne equally by the Lessor & Lessee.</li>
+                        <li>In case of any dispute between the parties of any nature, the Courts at <strong>${jurisdiction || '[Jurisdiction]'}</strong> alone shall have the exclusive jurisdiction to try and decide the same.</li>
+                     </ol>
+                     <p class="text-center mt-8 font-bold">IN WITNESS WHEREOF...</p>
+                    <div class="flex flex-col sm:flex-row justify-around items-start mt-8">
+                        <div class="w-full sm:w-1/2 p-2"><h4 class="font-bold text-center">LESSOR(S)</h4>${landlordSignatures}</div>
+                         <div class="w-full sm:w-1/2 p-2"><h4 class="font-bold text-center">LESSEE(S)</h4>${lesseeSignatures}</div>
+                    </div>
+                     <div class="mt-8"><h3 class="text-center font-bold">WITNESSES</h3><div class="flex flex-col sm:flex-row justify-around items-start">${witnessSignatures}</div></div>
+                </div>
+                `;
+            }, [lessors, lessees, witnesses, agreementDate, agreementTehsil, agreementDistrict, propertyAddress, leaseDurationYears, startDate, endDate, monthlyRent, securityDeposit, isGstApplicable, lockInPeriod, noticePeriod, lessorObligations, lesseeObligations, jurisdiction, selectedState]);
+
+
+            return (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    {/* Form Section */}
+                    <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg no-print">
+                         <form>
+                            <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">1. Parties & Location</h3>
+                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                     <input type="text" value={agreementTehsil} onChange={e => setAgreementTehsil(e.target.value)} title="Tehsil" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Tehsil / Wazirabad" />
+                                     <input type="text" value={agreementDistrict} onChange={e => setAgreementDistrict(e.target.value)} title="District" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="District / Gurugram" />
+                                 </div>
+                                 <input type="date" value={agreementDate} onChange={e => setAgreementDate(e.target.value)} title="Agreement Date" className="mt-4 block w-full rounded-md border-gray-300 shadow-sm" />
+                                <div className="space-y-4 mt-4">
+                                    <PartyInput title="Lessor Details" parties={lessors} setParties={setLessors} isCommercial={false} />
+                                    <PartyInput title="Lessee Details" parties={lessees} setParties={setLessees} isCommercial={true} />
+                                </div>
+                            </div>
+                             <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">2. Property Description (Demised Premises)</h3>
+                                 <textarea value={propertyAddress} onChange={e => setPropertyAddress(e.target.value)} rows={3} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Full description of the leased property..."></textarea>
+                            </div>
+                            <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">3. Lease Tenure</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <input type="number" value={leaseDurationYears} onChange={e => setLeaseDurationYears(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Lease Duration (Years)" />
+                                    <input type="date" value={startDate} onChange={e => setStartDate(e.target.value)} title="Lease Start Date" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" />
+                                    <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} title="Lease End Date" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" />
+                                    <input type="number" value={lockInPeriod} onChange={e => setLockInPeriod(e.target.value)} min="0" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Lock-in Period (Years)" />
+                                    <input type="number" value={noticePeriod} onChange={e => setNoticePeriod(e.target.value)} min="0" className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Notice Period (Months)" />
+                                </div>
+                            </div>
+                            <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">4. Rent & Securities</h3>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                    <input type="number" value={monthlyRent} onChange={e => setMonthlyRent(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Monthly Rent (₹)" />
+                                    <input type="number" value={securityDeposit} onChange={e => setSecurityDeposit(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Security Deposit (₹)" />
+                                </div>
+                                 <div className="mt-4">
+                                    <label className="flex items-center">
+                                        <input type="checkbox" checked={isGstApplicable} onChange={e => setIsGstApplicable(e.target.checked)} className="focus:ring-indigo-500 h-4 w-4 text-indigo-600 border-gray-300 rounded" />
+                                        <span className="ml-2 text-sm text-gray-600">Is GST Applicable?</span>
+                                    </label>
+                                </div>
+                            </div>
+                             <div className="mb-8 border-b pb-6">
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">5. Lessor's & Lessee's Obligations</h3>
+                                <textarea value={lessorObligations} onChange={e => setLessorObligations(e.target.value)} rows={4} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Lessor's Obligations..."></textarea>
+                                <textarea value={lesseeObligations} onChange={e => setLesseeObligations(e.target.value)} rows={4} className="mt-4 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Lessee's Obligations..."></textarea>
+                            </div>
+                            <div className="mb-8 border-b pb-6">
+                                <WitnessInput witnesses={witnesses} setWitnesses={setWitnesses} isCommercial={true} />
+                            </div>
+                            <div>
+                                <h3 className="text-xl font-semibold text-gray-800 mb-4">7. Jurisdiction & Stamp Duty</h3>
+                                <input type="text" value={jurisdiction} onChange={e => setJurisdiction(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm" placeholder="Jurisdiction (e.g. Gurugram)" />
+                                 <div className="mt-4">
+                                   <StampDutyCalculator selectedState={selectedState} setSelectedState={setSelectedState} rent={parseFloat(monthlyRent) || 0} deposit={parseFloat(securityDeposit) || 0} />
+                                </div>
+                            </div>
+                        </form>
+                    </div>
+                    {/* Output Section */}
+                    <div className="lg:sticky top-8 self-start">
+                         <div className="bg-white p-4 sm:p-6 rounded-lg shadow-lg print-area">
+                            <ActionButtons agreementContent={agreementContent} onReset={initialFormState} downloadFn={(setGenerating) => downloadPDF('commercialAgreementOutput', 'Commercial_Lease_Agreement.pdf', setGenerating)} title="Generated Commercial Agreement" />
+                            <div id="commercialAgreementOutput" className="agreement-output bg-white p-2 border rounded-md h-[75vh] overflow-y-auto text-sm" dangerouslySetInnerHTML={{ __html: agreementContent }}></div>
+                             <p className="text-xs text-gray-500 mt-4 no-print">
+                               <strong>Disclaimer:</strong> This is a template. Consult a legal professional for advice.
+                           </p>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+        
+        const App = () => {
+            const [activeTab, setActiveTab] = useState(AgreementType.RESIDENTIAL);
+
+            const renderContent = useCallback(() => {
+                switch (activeTab) {
+                    case AgreementType.RESIDENTIAL:
+                        return <ResidentialAgreement />;
+                    case AgreementType.COMMERCIAL:
+                        return <CommercialAgreement />;
+                    default:
+                        return <ResidentialAgreement />;
+                }
+            }, [activeTab]);
+
+            return (
+                <div className="w-full max-w-screen-2xl mx-auto p-4 md:p-8">
+                    <header className="text-center mb-8 no-print">
+                        <h1 className="text-4xl font-bold text-gray-900">Professional Agreement Generator</h1>
+                        <p className="text-lg text-gray-600 mt-2">Generate and download residential or commercial rent agreements.</p>
+                    </header>
+
+                    <div className="mb-8 border-b border-gray-200 no-print">
+                        <nav className="flex justify-between -mb-px" aria-label="Tabs">
+                            <button
+                                className={`tab-btn py-4 px-1 border-b-2 font-medium text-lg text-gray-500 hover:text-gray-700 hover:border-gray-300 transition-colors duration-200 ${activeTab === AgreementType.RESIDENTIAL ? 'active' : ''}`}
+                                onClick={() => setActiveTab(AgreementType.RESIDENTIAL)}
+                            >
+                                Residential Rent Agreement
+                            </button>
+                            <button
+                                className={`tab-btn py-4 px-1 border-b-2 font-medium text-lg text-gray-500 hover:text-gray-700 hover:border-gray-300 transition-colors duration-200 ${activeTab === AgreementType.COMMERCIAL ? 'active' : ''}`}
+                                onClick={() => setActiveTab(AgreementType.COMMERCIAL)}
+                            >
+                                Commercial Rent Agreement
+                            </button>
+                        </nav>
+                    </div>
+
+                    <div>
+                        {renderContent()}
+                    </div>
+                </div>
+            );
+        };
+
+        // --- Mount Application ---
+        const rootElement = document.getElementById('root');
+        const root = ReactDOM.createRoot(rootElement);
+        root.render(<App />);
+
+    </script>
+</body>
+</html>
